@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin - AI Film Yarışması</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+
+<div id="loginOverlay" style="position:fixed;inset:0;background:#0f172a;display:flex;align-items:center;justify-content:center;z-index:999">
+  <div class="card" style="width:320px;text-align:center">
+    <h2 style="margin-bottom:20px">Admin Girişi</h2>
+    <input type="password" id="passInput" placeholder="Şifre" style="margin-bottom:12px" />
+    <button class="btn btn-primary" style="width:100%" onclick="checkPass()">Giriş</button>
+    <p id="passError" style="color:#f87171;margin-top:8px;display:none">Yanlış şifre</p>
+  </div>
+</div>
+
+<div class="container" id="mainContent" style="display:none">
+  <h1>AI Film Yarışması</h1>
+  <p class="subtitle">Admin Paneli</p>
+
+  <div class="card">
+    <h2>Proje Ekle</h2>
+    <div class="form-row">
+      <input type="text" id="projectName" placeholder="Proje adı girin..." />
+      <button class="btn btn-primary" onclick="addProject()">Ekle</button>
+    </div>
+    <ul class="project-list" id="projectList"></ul>
+  </div>
+
+  <div class="card">
+    <div class="status-bar">
+      <div>
+        <span class="status-badge status-closed" id="statusBadge">Kapalı</span>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-success" id="toggleBtn" onclick="toggleVoting()">Oylamayı Başlat</button>
+        <button class="btn btn-danger" onclick="resetVotes()">Oyları Sıfırla</button>
+      </div>
+    </div>
+    <div class="qr-section" id="qrSection" style="display:none">
+      <p style="margin-bottom:8px;color:#94a3b8">İzleyiciler bu QR kodu tarasın:</p>
+      <img id="qrImg" src="" alt="QR Kod" style="width:200px;height:200px;border-radius:8px;" />
+      <p class="qr-link" id="qrLink"></p>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Sonuçlar</h2>
+    <div id="resultsArea"><p class="empty-state">Henüz oy yok.</p></div>
+  </div>
+</div>
+
+<script>
+  // =============================================
+  // BURAYA KENDİ BİLGİLERİNİZİ GİRİN
+  const SUPABASE_URL = 'https://raiqpelbgvriwffhmcmi.supabase.co'
+  const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJhaXFwZWxiZ3ZyaXdmZmhtY21pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc4MDE1MjksImV4cCI6MjA5MzM3NzUyOX0.xEpqZywAHDvukqx--UPjURTreTk0oLUxqyKupDuw2jM'
+  const ADMIN_PASSWORD = 'azerbaycan! turkiye@3'
+  // =============================================
+
+  const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY)
+
+  function showMain() {
+    document.getElementById('loginOverlay').style.display = 'none'
+    document.getElementById('mainContent').style.display = 'block'
+    init()
+  }
+
+  function checkPass() {
+    const val = document.getElementById('passInput').value
+    if (val === ADMIN_PASSWORD) {
+      sessionStorage.setItem('admin_auth', 'true')
+      showMain()
+    } else {
+      document.getElementById('passError').style.display = 'block'
+    }
+  }
+
+  document.getElementById('passInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') checkPass()
+  })
+
+  if (sessionStorage.getItem('admin_auth') === 'true') showMain()
+
+  let projects = []
+  let votes = []
+  let votingOpen = false
+
+  async function init() {
+    await loadAll()
+    subscribeRealtime()
+  }
+
+  async function loadAll() {
+    const [{ data: p }, { data: v }, { data: s }] = await Promise.all([
+      sb.from('projects').select('*').order('created_at'),
+      sb.from('votes').select('*'),
+      sb.from('settings').select('*').eq('key', 'voting_open').single()
+    ])
+    projects = p || []
+    votes = v || []
+    votingOpen = s?.value === 'true'
+    render()
+  }
+
+  function subscribeRealtime() {
+    sb.channel('changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'projects' }, loadAll)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'votes' }, loadAll)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'settings' }, loadAll)
+      .subscribe()
+  }
+
+  async function addProject() {
+    const name = document.getElementById('projectName').value.trim()
+    if (!name) return
+    await sb.from('projects').insert({ name })
+    document.getElementById('projectName').value = ''
+  }
+
+  async function removeProject(id) {
+    await sb.from('projects').delete().eq('id', id)
+  }
+
+  async function toggleVoting() {
+    const newVal = (!votingOpen).toString()
+    await sb.from('settings').update({ value: newVal }).eq('key', 'voting_open')
+  }
+
+  async function resetVotes() {
+    if (!confirm('Tüm oylar silinecek. Emin misiniz?')) return
+    await sb.from('votes').delete().neq('id', '00000000-0000-0000-0000-000000000000')
+  }
+
+  function generateQR() {
+    const url = location.origin + '/vote.html'
+    document.getElementById('qrLink').textContent = url
+    document.getElementById('qrImg').src = 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(url)
+  }
+
+  function calcResults() {
+    return projects.map(p => {
+      const pv = votes.filter(v => v.project_id === p.id)
+      const count = pv.length
+      if (!count) return { ...p, avg: { gorsel: 0, senaryo: 0, yaraticilik: 0, toplam: 0 }, count: 0 }
+      const sum = pv.reduce((a, v) => ({
+        gorsel: a.gorsel + v.gorsel,
+        senaryo: a.senaryo + v.senaryo,
+        yaraticilik: a.yaraticilik + v.yaraticilik
+      }), { gorsel: 0, senaryo: 0, yaraticilik: 0 })
+      return {
+        ...p,
+        avg: {
+          gorsel: +(sum.gorsel / count).toFixed(1),
+          senaryo: +(sum.senaryo / count).toFixed(1),
+          yaraticilik: +(sum.yaraticilik / count).toFixed(1),
+          toplam: +((sum.gorsel + sum.senaryo + sum.yaraticilik) / (count * 3)).toFixed(1)
+        },
+        count
+      }
+    }).sort((a, b) => b.avg.toplam - a.avg.toplam)
+  }
+
+  function render() {
+    document.getElementById('projectList').innerHTML = projects.map(p =>
+      `<li><span class="name">${esc(p.name)}</span><button class="remove-btn" onclick="removeProject('${p.id}')">&times;</button></li>`
+    ).join('')
+
+    const badge = document.getElementById('statusBadge')
+    const btn = document.getElementById('toggleBtn')
+    const qr = document.getElementById('qrSection')
+
+    if (votingOpen) {
+      badge.textContent = 'Açık'; badge.className = 'status-badge status-open'
+      btn.textContent = 'Oylamayı Durdur'; btn.className = 'btn btn-danger'
+      qr.style.display = 'block'
+      generateQR()
+    } else {
+      badge.textContent = 'Kapalı'; badge.className = 'status-badge status-closed'
+      btn.textContent = 'Oylamayı Başlat'; btn.className = 'btn btn-success'
+      qr.style.display = 'none'
+    }
+
+    const results = calcResults()
+    const hasVotes = results.some(r => r.count > 0)
+    const area = document.getElementById('resultsArea')
+    if (!hasVotes) { area.innerHTML = '<p class="empty-state">Henüz oy yok.</p>'; return }
+
+    let html = `<table><thead><tr>
+      <th>#</th><th>Proje</th><th>Görsel</th><th>Senaryo</th><th>Yaratıcılık</th><th>Ort.</th><th>Oy</th>
+    </tr></thead><tbody>`
+    results.forEach((r, i) => {
+      const cls = i < 3 ? `rank rank-${i+1}` : ''
+      html += `<tr>
+        <td class="${cls}">${i+1}</td>
+        <td style="text-align:left;font-weight:500">${esc(r.name)}</td>
+        <td>${r.avg.gorsel}</td><td>${r.avg.senaryo}</td><td>${r.avg.yaraticilik}</td>
+        <td style="font-weight:700;color:#38bdf8">${r.avg.toplam}</td>
+        <td>${r.count}</td>
+      </tr>`
+    })
+    area.innerHTML = html + '</tbody></table>'
+  }
+
+  function esc(s) {
+    const d = document.createElement('div'); d.textContent = s; return d.innerHTML
+  }
+</script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+{
+  "name": "oylama",
+  "version": "1.0.0",
+  "description": "AI Film Yarışması - İzleyici Puanlama Sistemi",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "qrcode": "^1.5.4",
+    "socket.io": "^4.7.5"
+  }
+}

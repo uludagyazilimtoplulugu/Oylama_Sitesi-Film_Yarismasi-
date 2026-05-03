@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Oyla - AI Film Yarışması</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+<div class="container">
+  <h1>AI Film Yarışması</h1>
+  <p class="subtitle">Projeleri puanlayın</p>
+
+  <div id="closedMsg" class="voting-closed-msg" style="display:none">
+    Oylama şu anda kapalı. Lütfen bekleyin...
+  </div>
+
+  <div id="projectsArea"></div>
+  <div id="voteFormArea" style="display:none"></div>
+</div>
+
+<div id="toast" class="toast" style="display:none"></div>
+
+<script>
+  // =============================================
+  // BURAYA KENDİ BİLGİLERİNİZİ GİRİN
+  const SUPABASE_URL = 'https://raiqpelbgvriwffhmcmi.supabase.co'
+  const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJhaXFwZWxiZ3ZyaXdmZmhtY21pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc4MDE1MjksImV4cCI6MjA5MzM3NzUyOX0.xEpqZywAHDvukqx--UPjURTreTk0oLUxqyKupDuw2jM'
+  // =============================================
+
+  const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY)
+
+  let voterId = localStorage.getItem('voter_id')
+  if (!voterId) {
+    voterId = Math.random().toString(36).slice(2) + Date.now().toString(36)
+    localStorage.setItem('voter_id', voterId)
+  }
+
+  let projects = []
+  let votingOpen = false
+  let votedProjects = new Set()
+  let selectedProject = null
+  let scores = { gorsel: 5, senaryo: 5, yaraticilik: 5 }
+
+  async function init() {
+    const [{ data: p }, { data: s }, { data: v }] = await Promise.all([
+      sb.from('projects').select('*').order('created_at'),
+      sb.from('settings').select('*').eq('key', 'voting_open').single(),
+      sb.from('votes').select('project_id').eq('voter_id', voterId)
+    ])
+    projects = p || []
+    votingOpen = s?.value === 'true'
+    votedProjects = new Set((v || []).map(x => x.project_id))
+    render()
+    subscribeRealtime()
+  }
+
+  function subscribeRealtime() {
+    sb.channel('vote-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'settings' }, async () => {
+        const { data } = await sb.from('settings').select('value').eq('key', 'voting_open').single()
+        votingOpen = data?.value === 'true'
+        render()
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'projects' }, async () => {
+        const { data } = await sb.from('projects').select('*').order('created_at')
+        projects = data || []
+        render()
+      })
+      .subscribe()
+  }
+
+  function selectProject(id) {
+    if (votedProjects.has(id)) return
+    selectedProject = id
+    scores = { gorsel: 5, senaryo: 5, yaraticilik: 5 }
+    render()
+  }
+
+  function setScore(criteria, val) {
+    scores[criteria] = val
+    render()
+  }
+
+  async function submitVote() {
+    if (!selectedProject) return
+    const { error } = await sb.from('votes').insert({
+      project_id: selectedProject,
+      voter_id: voterId,
+      gorsel: scores.gorsel,
+      senaryo: scores.senaryo,
+      yaraticilik: scores.yaraticilik
+    })
+    if (error) {
+      showToast(error.code === '23505' ? 'Bu projeye zaten oy verdiniz.' : 'Bir hata oluştu.', 'error')
+    } else {
+      votedProjects.add(selectedProject)
+      selectedProject = null
+      showToast('Oyunuz kaydedildi!', 'success')
+      render()
+    }
+  }
+
+  function renderScoreButtons(criteria, current) {
+    let html = '<div class="score-buttons">'
+    for (let i = 1; i <= 10; i++) {
+      html += `<button class="score-btn ${i === current ? 'active' : ''}" onclick="setScore('${criteria}',${i})">${i}</button>`
+    }
+    return html + '</div>'
+  }
+
+  function render() {
+    const closed = document.getElementById('closedMsg')
+    const area = document.getElementById('projectsArea')
+    const formArea = document.getElementById('voteFormArea')
+
+    if (!votingOpen) {
+      closed.style.display = 'block'
+      area.style.display = 'none'
+      formArea.style.display = 'none'
+      return
+    }
+
+    closed.style.display = 'none'
+    area.style.display = 'block'
+
+    if (!projects.length) {
+      area.innerHTML = '<p class="empty-state">Henüz proje eklenmemiş.</p>'
+      formArea.style.display = 'none'
+      return
+    }
+
+    area.innerHTML = projects.map(p => {
+      const voted = votedProjects.has(p.id)
+      const selected = selectedProject === p.id
+      let cls = 'vote-project' + (voted ? ' voted' : selected ? ' selected' : '')
+      return `<div class="${cls}" onclick="selectProject('${p.id}')">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span class="project-name">${esc(p.name)}</span>
+          ${voted ? '<span class="voted-badge">Oy verildi ✓</span>' : ''}
+        </div>
+      </div>`
+    }).join('')
+
+    if (selectedProject && !votedProjects.has(selectedProject)) {
+      const proj = projects.find(p => p.id === selectedProject)
+      if (proj) {
+        formArea.style.display = 'block'
+        formArea.innerHTML = `<div class="vote-form">
+          <h3>${esc(proj.name)}</h3>
+          <div class="criteria"><label>Görsel Kalite</label>${renderScoreButtons('gorsel', scores.gorsel)}</div>
+          <div class="criteria"><label>Senaryo & Hikaye</label>${renderScoreButtons('senaryo', scores.senaryo)}</div>
+          <div class="criteria"><label>Yaratıcılık</label>${renderScoreButtons('yaraticilik', scores.yaraticilik)}</div>
+          <button class="btn btn-primary" style="width:100%;margin-top:12px;padding:14px" onclick="submitVote()">Oyu Gönder</button>
+        </div>`
+        return
+      }
+    }
+    formArea.style.display = 'none'
+  }
+
+  function showToast(msg, type) {
+    const t = document.getElementById('toast')
+    t.textContent = msg
+    t.className = 'toast toast-' + type
+    t.style.display = 'block'
+    setTimeout(() => t.style.display = 'none', 2500)
+  }
+
+  function esc(s) {
+    const d = document.createElement('div'); d.textContent = s; return d.innerHTML
+  }
+
+  init()
+</script>
+</body>
+</html>
